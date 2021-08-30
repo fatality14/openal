@@ -1,3 +1,5 @@
+#include <iostream>
+
 #include <assert.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -9,150 +11,369 @@
 #include "al.h"
 #include "alext.h"
 
+/*struct RIFF_Header {
+    char chunkID[4];
+    long chunkSize;
+    char format[4];
+};
 
-#include "alhelpers.h"
+struct WAVE_Format {
+    char subChunkID[4];
+    long subChunkSize;
+    short audioFormat;
+    short numChannels;
+    long sampleRate;
+    long byteRate;
+    short blockAlign;
+    short bitsPerSample;
+};
 
-#define PRIx64 __PRI_64_LENGTH_MODIFIER__ "x"
-#define __PRI_64_LENGTH_MODIFIER__ "ll"
+struct WAVE_Data {
+    char subChunkID[4];
+    long subChunk2Size;
+};
 
-/* LoadBuffer loads the named audio file into an OpenAL buffer object, and
- * returns the new buffer ID.
- */
-static ALuint LoadSound(const char *filename)
-{
-    ALenum err, format;
-    ALuint buffer;
-    SNDFILE *sndfile;
-    SF_INFO sfinfo;
-    short *membuf;
-    sf_count_t num_frames;
-    ALsizei num_bytes;
+bool loadWavFile(const char* filename, WAVE_Format& wave_format,
+                 RIFF_Header& riff_header, WAVE_Data& wave_data,
+                 unsigned char*& data) {
+  FILE* soundFile = NULL;
 
-    /* Open the audio file and check that it's usable. */
-    sndfile = sf_open(filename, SFM_READ, &sfinfo);
-    if(!sndfile)
-    {
-        fprintf(stderr, "Could not open audio in %s: %s\n", filename, sf_strerror(sndfile));
-        return 0;
-    }
-    if(sfinfo.frames < 1 || sfinfo.frames > (sf_count_t)(INT_MAX/sizeof(short))/sfinfo.channels)
-    {
-        fprintf(stderr, "Bad sample count in %s (%" PRIx64 ")\n", filename, sfinfo.frames);
-        sf_close(sndfile);
-        return 0;
-    }
+  try {
+    soundFile = fopen(filename, "rb");
+    if (!soundFile)
+      throw (filename);
 
-    /* Get the sound format, and figure out the OpenAL format */
-    format = AL_NONE;
-    if(sfinfo.channels == 1)
-        format = AL_FORMAT_MONO16;
-    else if(sfinfo.channels == 2)
-        format = AL_FORMAT_STEREO16;
-    else if(sfinfo.channels == 3)
-    {
-        if(sf_command(sndfile, SFC_WAVEX_GET_AMBISONIC, NULL, 0) == SF_AMBISONIC_B_FORMAT)
-            format = AL_FORMAT_BFORMAT2D_16;
-    }
-    else if(sfinfo.channels == 4)
-    {
-        if(sf_command(sndfile, SFC_WAVEX_GET_AMBISONIC, NULL, 0) == SF_AMBISONIC_B_FORMAT)
-            format = AL_FORMAT_BFORMAT3D_16;
-    }
-    if(!format)
-    {
-        fprintf(stderr, "Unsupported channel count: %d\n", sfinfo.channels);
-        sf_close(sndfile);
-        return 0;
-    }
+    fread(&riff_header, sizeof(RIFF_Header), 1, soundFile);
 
-    /* Decode the whole audio file to a buffer. */
-    membuf = (short*)malloc((size_t)(sfinfo.frames * sfinfo.channels) * sizeof(short));
+    if ((riff_header.chunkID[0] != 'R' ||
+         riff_header.chunkID[1] != 'I' ||
+         riff_header.chunkID[2] != 'F' ||
+         riff_header.chunkID[3] != 'F') &&
+        (riff_header.format[0] != 'W' ||
+         riff_header.format[1] != 'A' ||
+         riff_header.format[2] != 'V' ||
+         riff_header.format[3] != 'E'))
+             throw ("Invalid RIFF or WAVE Header");
 
-    num_frames = sf_readf_short(sndfile, membuf, sfinfo.frames);
-    if(num_frames < 1)
-    {
-        free(membuf);
-        sf_close(sndfile);
-        fprintf(stderr, "Failed to read samples in %s (%" PRIx64 ")\n", filename, num_frames);
-        return 0;
-    }
-    num_bytes = (ALsizei)(num_frames * sfinfo.channels) * (ALsizei)sizeof(short);
+    fread(&wave_format, sizeof(WAVE_Format), 1, soundFile);
 
-    /* Buffer the audio data into a new buffer object, then free the data and
-     * close the file.
-     */
-    buffer = 0;
-    alGenBuffers(1, &buffer);
-    alBufferData(buffer, format, membuf, num_bytes, sfinfo.samplerate);
+    if (wave_format.subChunkID[0] != 'f' ||
+        wave_format.subChunkID[1] != 'm' ||
+        wave_format.subChunkID[2] != 't' ||
+        wave_format.subChunkID[3] != ' ')
+             throw ("Invalid Wave Format");
 
-    free(membuf);
-    sf_close(sndfile);
+    if (wave_format.subChunkSize > 16)
+        fseek(soundFile, sizeof(short), SEEK_CUR);
 
-    /* Check if an error occured, and clean up if so. */
-    err = alGetError();
-    if(err != AL_NO_ERROR)
-    {
-        fprintf(stderr, "OpenAL Error: %s\n", alGetString(err));
-        if(buffer && alIsBuffer(buffer))
-            alDeleteBuffers(1, &buffer);
-        return 0;
-    }
+    fread(&wave_data, sizeof(WAVE_Data), 1, soundFile);
 
-    return buffer;
+    if (wave_data.subChunkID[0] != 'd' ||
+        wave_data.subChunkID[1] != 'a' ||
+        wave_data.subChunkID[2] != 't' ||
+        wave_data.subChunkID[3] != 'a')
+             throw ("Invalid data header");
+
+    //wave_data.subChunk2Size = 32;
+    data = new unsigned char[wave_data.subChunk2Size];
+
+    if (!fread(data, sizeof (unsigned char), wave_data.subChunk2Size, soundFile))
+        throw ("error loading WAVE data into struct!");
+
+    fclose(soundFile);
+    return true;
+  } catch(char* error) {
+    if (soundFile != NULL)
+        fclose(soundFile);
+    return false;
+  }
 }
 
+void reverseChunks(unsigned char*& data, size_t arrSize, size_t chunkSize){
+    //arrSize /= 2;
+    size_t chunkAmount = arrSize/chunkSize;//3
+    size_t lastChunkSize = arrSize - chunkAmount*chunkSize;//6
 
-int main(int argc, char **argv)
-{
-    ALuint source, buffer;
-    ALfloat offset;
-    ALenum state;
+    const int shift = 0;
+    unsigned char* newdata = new unsigned char[arrSize-shift];
+    for(size_t i = shift; i < arrSize; ++i){
+        newdata[i-shift] = data[i];
+    }
+    delete[] data;
+    data = newdata;
 
-    /* Print out usage if no arguments were specified */
-    if(argc < 2)
-    {
-        fprintf(stderr, "Usage: %s [-device <name>] <filename>\n", argv[0]);
-        return 1;
+    unsigned char c;
+    for(size_t i = 0; i < chunkAmount; ++i){
+        for(size_t j = 0; j < chunkSize/2; ++j){
+            c = data[chunkSize - j + i * chunkSize - 1];
+            data[chunkSize - j + i * chunkSize - 1] = data[j + i * chunkSize];
+            data[j + i * chunkSize] = c;
+            //std::cout << chunkSize - j + i * chunkSize - 1 << std::endl;
+            //std::cout << j + i * chunkSize << std::endl;
+        }
+    }
+    for(size_t i = 0; i < lastChunkSize/2; ++i){
+        c = data[arrSize - i - 1];
+        data[arrSize - i - 1] = data[i + arrSize - lastChunkSize];
+        data[i + arrSize - lastChunkSize] = c;
+        //std::cout << arrSize - i - 1 << std::endl;
+        //std::cout << i + arrSize - lastChunkSize << std::endl;
+    }
+}
+
+bool createALBuffer(WAVE_Format& wave_format, RIFF_Header& riff_header,
+                    WAVE_Data& wave_data, unsigned char* data,
+                    ALuint* buffer, ALsizei* size,
+                    ALsizei* frequency, ALenum* format) {
+  try {
+    *size = wave_data.subChunk2Size;
+    *frequency = wave_format.sampleRate;
+
+    if (wave_format.numChannels == 1) {
+        if (wave_format.bitsPerSample == 8 )
+            *format = AL_FORMAT_MONO8;
+        else if (wave_format.bitsPerSample == 16)
+            *format = AL_FORMAT_MONO16;
+    } else if (wave_format.numChannels == 2) {
+        if (wave_format.bitsPerSample == 8 )
+            *format = AL_FORMAT_STEREO8;
+        else if (wave_format.bitsPerSample == 16)
+            *format = AL_FORMAT_STEREO16;
     }
 
-    /* Initialize OpenAL. */
-    argv++; argc--;
-    if(InitAL(&argv, &argc) != 0)
-        return 1;
+    alGenBuffers(1, buffer);
+    alBufferData(*buffer, *format, (void*)data,
+                 *size, *frequency);
+    return true;
+  } catch(char* error) {
+    return false;
+  }
+}
 
-    /* Load the sound into a buffer. */
-    buffer = LoadSound(argv[0]);
-    //buffer = ALuint(1);
-    if(!buffer)
-    {
-        CloseAL();
-        return 1;
+int main(){
+
+    //Sound play data
+    ALint state;                            // The state of the sound source
+    ALuint bufferID;                        // The OpenAL sound buffer ID
+    ALuint sourceID;                        // The OpenAL sound source
+    ALenum format;                          // The sound data format
+    ALsizei freq;                           // The frequency of the sound data
+    ALsizei size;                           // Data size
+
+    ALCdevice* device = alcOpenDevice(NULL);
+    ALCcontext* context = alcCreateContext(device, NULL);
+    alcMakeContextCurrent(context);
+
+    // Create sound buffer and source
+    alGenBuffers(1, &bufferID);
+    alGenSources(1, &sourceID);
+
+    // Set the source and listener to the same location
+    alListener3f(AL_POSITION, 0.0f, 0.0f, 0.0f);
+    alSource3f(sourceID, AL_POSITION, 0.0f, 0.0f, 0.0f);
+
+    WAVE_Format wave_format;
+    RIFF_Header riff_header;
+    WAVE_Data wave_data;
+    unsigned char* data;
+    loadWavFile("C:\\Users\\1234\\Documents\\oal\\1234.wav", wave_format, riff_header, wave_data, data);
+    reverseChunks(data, wave_data.subChunk2Size, 2);
+    createALBuffer(wave_format, riff_header, wave_data, data, &bufferID, &size, &freq, &format);
+
+    alSourcei(sourceID, AL_BUFFER, bufferID);
+
+    alSourcePlay(sourceID);
+
+    do{
+        alGetSourcei(sourceID, AL_SOURCE_STATE, &state);
+    } while (state != AL_STOPPED);
+
+
+    alDeleteBuffers(1, &bufferID);
+    alDeleteSources(1, &sourceID);
+    alcDestroyContext(context);
+    alcCloseDevice(device);
+
+    return 0;
+}*/
+
+
+struct RIFF_Header {
+    char chunkID[4];
+    long chunkSize;
+    char format[4];
+};
+
+struct WAVE_Format {
+    char subChunkID[4];
+    long subChunkSize;
+    short audioFormat;
+    short numChannels;
+    long sampleRate;
+    long byteRate;
+    short blockAlign;
+    short bitsPerSample;
+};
+
+struct WAVE_Data {
+    char subChunkID[4];
+    long subChunk2Size;
+};
+
+bool loadWavFile(const char* filename, WAVE_Format& wave_format,
+                 RIFF_Header& riff_header, WAVE_Data& wave_data,
+                 unsigned char*& data) {
+  FILE* soundFile = NULL;
+
+  try {
+    soundFile = fopen(filename, "rb");
+    if (!soundFile)
+      throw (filename);
+
+    fread(&riff_header, sizeof(RIFF_Header), 1, soundFile);
+
+    if ((riff_header.chunkID[0] != 'R' ||
+         riff_header.chunkID[1] != 'I' ||
+         riff_header.chunkID[2] != 'F' ||
+         riff_header.chunkID[3] != 'F') &&
+        (riff_header.format[0] != 'W' ||
+         riff_header.format[1] != 'A' ||
+         riff_header.format[2] != 'V' ||
+         riff_header.format[3] != 'E'))
+             throw ("Invalid RIFF or WAVE Header");
+
+    fread(&wave_format, sizeof(WAVE_Format), 1, soundFile);
+
+    if (wave_format.subChunkID[0] != 'f' ||
+        wave_format.subChunkID[1] != 'm' ||
+        wave_format.subChunkID[2] != 't' ||
+        wave_format.subChunkID[3] != ' ')
+             throw ("Invalid Wave Format");
+
+    if (wave_format.subChunkSize > 16)
+        fseek(soundFile, sizeof(short), SEEK_CUR);
+
+    fread(&wave_data, sizeof(WAVE_Data), 1, soundFile);
+
+    if (wave_data.subChunkID[0] != 'd' ||
+        wave_data.subChunkID[1] != 'a' ||
+        wave_data.subChunkID[2] != 't' ||
+        wave_data.subChunkID[3] != 'a')
+             throw ("Invalid data header");
+
+    //wave_data.subChunk2Size = 32;
+    data = new unsigned char[wave_data.subChunk2Size];
+
+    if (!fread(data, sizeof (unsigned char), wave_data.subChunk2Size, soundFile))
+        throw ("error loading WAVE data into struct!");
+
+    fclose(soundFile);
+    return true;
+  } catch(char* error) {
+    if (soundFile != NULL)
+        fclose(soundFile);
+    return false;
+  }
+}
+
+void reverseChunks(unsigned short* data, size_t arrSize, size_t chunkSize){
+    arrSize /= 2;
+    size_t chunkAmount = arrSize/chunkSize;//3
+    size_t lastChunkSize = arrSize - chunkAmount*chunkSize;//6
+
+    size_t currShift = 0;
+    unsigned short c;
+    for(size_t i = 0; i < chunkAmount; ++i){
+        for(size_t j = 0; j < chunkSize/2; ++j){
+            c = data[chunkSize - j + i * chunkSize - 1];
+            data[chunkSize - j + i * chunkSize - 1] = data[j + i * chunkSize];
+            data[j + i * chunkSize] = c;
+            //std::cout << chunkSize - j + i * chunkSize - 1 << std::endl;
+            //std::cout << j + i * chunkSize << std::endl;
+        }
+        currShift += chunkSize;
+    }
+    for(size_t i = 0; i < lastChunkSize/2; ++i){
+        c = data[arrSize - i - 1];
+        data[arrSize - i - 1] = data[i + arrSize - lastChunkSize];
+        data[i + arrSize - lastChunkSize] = c;
+        //std::cout << arrSize - i - 1 << std::endl;
+        //std::cout << i + arrSize - lastChunkSize << std::endl;
+    }
+}
+
+bool createALBuffer(WAVE_Format& wave_format, RIFF_Header& riff_header,
+                    WAVE_Data& wave_data, unsigned char* data,
+                    ALuint* buffer, ALsizei* size,
+                    ALsizei* frequency, ALenum* format) {
+  try {
+    *size = wave_data.subChunk2Size;
+    *frequency = wave_format.sampleRate;
+
+    if (wave_format.numChannels == 1) {
+        if (wave_format.bitsPerSample == 8 )
+            *format = AL_FORMAT_MONO8;
+        else if (wave_format.bitsPerSample == 16)
+            *format = AL_FORMAT_MONO16;
+    } else if (wave_format.numChannels == 2) {
+        if (wave_format.bitsPerSample == 8 )
+            *format = AL_FORMAT_STEREO8;
+        else if (wave_format.bitsPerSample == 16)
+            *format = AL_FORMAT_STEREO16;
     }
 
-    /* Create the source to play the sound with. */
-    source = 0;
-    alGenSources(1, &source);
-    alSourcei(source, AL_BUFFER, (ALint)buffer);
-    assert(alGetError()==AL_NO_ERROR && "Failed to setup sound source");
+    alGenBuffers(1, buffer);
+    alBufferData(*buffer, *format, (void*)data,
+                 *size, *frequency);
+    return true;
+  } catch(char* error) {
+    return false;
+  }
+}
 
-    /* Play the sound until it finishes. */
-    alSourcePlay(source);
-    do {
-        al_nssleep(10000000);
-        alGetSourcei(source, AL_SOURCE_STATE, &state);
+int main(){
 
-        /* Get the source offset. */
-        alGetSourcef(source, AL_SEC_OFFSET, &offset);
-        printf("\rOffset: %f  ", offset);
-        fflush(stdout);
-    } while(alGetError() == AL_NO_ERROR && state == AL_PLAYING);
-    printf("\n");
+    //Sound play data
+    ALint state;                            // The state of the sound source
+    ALuint bufferID;                        // The OpenAL sound buffer ID
+    ALuint sourceID;                        // The OpenAL sound source
+    ALenum format;                          // The sound data format
+    ALsizei freq;                           // The frequency of the sound data
+    ALsizei size;                           // Data size
 
-    /* All done. Delete resources, and close down OpenAL. */
-    alDeleteSources(1, &source);
-    alDeleteBuffers(1, &buffer);
+    ALCdevice* device = alcOpenDevice(NULL);
+    ALCcontext* context = alcCreateContext(device, NULL);
+    alcMakeContextCurrent(context);
 
-    CloseAL();
+    // Create sound buffer and source
+    alGenBuffers(1, &bufferID);
+    alGenSources(1, &sourceID);
+
+    // Set the source and listener to the same location
+    alListener3f(AL_POSITION, 0.0f, 0.0f, 0.0f);
+    alSource3f(sourceID, AL_POSITION, 0.0f, 0.0f, 0.0f);
+
+    WAVE_Format wave_format;
+    RIFF_Header riff_header;
+    WAVE_Data wave_data;
+    unsigned char* data;
+    loadWavFile("C:\\Users\\1234\\Documents\\oal\\1234.wav", wave_format, riff_header, wave_data, data);
+    reverseChunks((unsigned short*)data, wave_data.subChunk2Size, 2);
+    createALBuffer(wave_format, riff_header, wave_data, data, &bufferID, &size, &freq, &format);
+
+    alSourcei(sourceID, AL_BUFFER, bufferID);
+
+    alSourcePlay(sourceID);
+
+    do{
+        alGetSourcei(sourceID, AL_SOURCE_STATE, &state);
+    } while (state != AL_STOPPED);
+
+
+    alDeleteBuffers(1, &bufferID);
+    alDeleteSources(1, &sourceID);
+    alcDestroyContext(context);
+    alcCloseDevice(device);
 
     return 0;
 }
