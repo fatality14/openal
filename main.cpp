@@ -261,7 +261,7 @@ bool loadWavFile(const char* filename, WAVE_Format& wave_format,
         wave_data.subChunkID[3] != 'a')
              throw ("Invalid data header");
 
-    //wave_data.subChunk2Size = 32;
+    //wave_data.subChunk2Size = 5000;
     data = new unsigned char[wave_data.subChunk2Size];
 
     if (!fread(data, sizeof (unsigned char), wave_data.subChunk2Size, soundFile))
@@ -276,13 +276,13 @@ bool loadWavFile(const char* filename, WAVE_Format& wave_format,
   }
 }
 
-void reverseChunks(unsigned short* data, size_t arrSize, size_t chunkSize){
-    arrSize /= 2;
+void reverseChunks(unsigned int* data, size_t arrSize, size_t chunkSize){
+    arrSize /= 4;
     size_t chunkAmount = arrSize/chunkSize;//3
     size_t lastChunkSize = arrSize - chunkAmount*chunkSize;//6
 
     size_t currShift = 0;
-    unsigned short c;
+    unsigned int c;
     for(size_t i = 0; i < chunkAmount; ++i){
         for(size_t j = 0; j < chunkSize/2; ++j){
             c = data[chunkSize - j + i * chunkSize - 1];
@@ -299,6 +299,30 @@ void reverseChunks(unsigned short* data, size_t arrSize, size_t chunkSize){
         data[i + arrSize - lastChunkSize] = c;
         //std::cout << arrSize - i - 1 << std::endl;
         //std::cout << i + arrSize - lastChunkSize << std::endl;
+    }
+}
+
+void srinkByChunks(unsigned int* data, size_t arrSize, size_t chunkSize){
+    arrSize /= 4;
+    size_t chunkAmount = arrSize/chunkSize;
+    size_t lastChunkSize = arrSize - chunkAmount*chunkSize;
+
+    unsigned int c;
+
+    for(size_t i = 0; i < chunkAmount; ++i){
+        c = data[i * chunkSize];
+        //std::cout << i * chunkSize << std::endl;
+        for(size_t j = 1; j < chunkSize; ++j){
+            data[i * chunkSize + j] = c;
+            //std::cout << i * chunkSize + j << std::endl;
+        }
+    }
+
+    //std::cout << chunkAmount * chunkSize  << std::endl;
+    c = data[chunkAmount * chunkSize];
+    for(size_t i = 1; i < lastChunkSize; ++i){
+        data[chunkAmount * chunkSize + i] = c;
+        //std::cout << chunkAmount * chunkSize + i << std::endl;
     }
 }
 
@@ -358,7 +382,8 @@ int main(){
     WAVE_Data wave_data;
     unsigned char* data;
     loadWavFile("C:\\Users\\1234\\Documents\\oal\\1234.wav", wave_format, riff_header, wave_data, data);
-    reverseChunks((unsigned short*)data, wave_data.subChunk2Size, 2);
+    reverseChunks((unsigned int*)data, wave_data.subChunk2Size, 2500);
+    srinkByChunks((unsigned int*)data, wave_data.subChunk2Size, 6);
     createALBuffer(wave_format, riff_header, wave_data, data, &bufferID, &size, &freq, &format);
 
     alSourcei(sourceID, AL_BUFFER, bufferID);
